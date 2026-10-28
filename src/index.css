@@ -1,0 +1,1023 @@
+import { useEffect, useMemo, useState } from 'react';
+import { jsPDF } from 'jspdf';
+
+const STORAGE_KEY = 'obra-hvac-tracker-v1';
+const planTypes = ['Carrera', 'Campaña', 'Instalación', 'Comercial', 'Residencial'];
+const tabLabels = ['overview', 'plans', 'tasks', 'reports', 'settings'];
+const statusColors = {
+  'Pendiente': '#f59e0b',
+  'En progreso': '#3b82f6',
+  'Completado': '#10b981',
+  'Bloqueado': '#ef4444',
+  'Revisión': '#8b5cf6',
+  'Abierto': '#ef4444',
+  'Cerrado': '#10b981',
+};
+
+const defaultSettings = {
+  companyName: 'HVAC Obras Pro',
+  inspectorName: 'Ing. Luis Tosca',
+  email: 'contacto@hvacobraspro.com',
+  phone: '+54 11 4567-8900',
+  theme: 'light',
+  logo: '',
+};
+
+const sampleProjects = [
+  {
+    id: 'proj-1',
+    name: 'Torre Norte - HVAC Central',
+    type: 'Edificio comercial',
+    client: 'Inmobiliaria Norte',
+    location: 'CABA',
+    manager: 'Pablo Mendez',
+    status: 'En seguimiento',
+    updatedAt: '2026-10-28',
+    plans: [
+      {
+        id: 'plan-1',
+        name: 'Planta baja - HVAC.pdf',
+        type: 'pdf',
+        url: '',
+        issues: [
+          {
+            id: 'issue-1',
+            title: 'Conexión AHU-02',
+            description: 'Falta revisión de ventilación y aislamiento térmico.',
+            transcript: 'Se observa desconexión del conducto en la zona de ingreso. Requiere inspección del técnico.',
+            x: 0.46,
+            y: 0.41,
+            status: 'Abierto',
+            attachments: [
+              { id: 'att-1', name: 'foto1.jpg', type: 'image', url: 'https://images.unsplash.com/photo-1581092160607-ee22621dd758?auto=format&fit=crop&w=800&q=80' },
+            ],
+          },
+        ],
+      },
+      {
+        id: 'plan-2',
+        name: 'Nivel 5 - Chiller.png',
+        type: 'image',
+        url: 'https://images.unsplash.com/photo-1581092918056-0c4c3acd3789?auto=format&fit=crop&w=1200&q=80',
+        issues: [],
+      },
+    ],
+    tasks: [
+      { id: 'task-1', title: 'Instalación de bombas de agua', status: 'En progreso', owner: 'Matías', dueDate: '2026-10-30' },
+      { id: 'task-2', title: 'Prueba de vav y registros', status: 'Pendiente', owner: 'Nicolás', dueDate: '2026-11-02' },
+      { id: 'task-3', title: 'Control de caudal y purga', status: 'Completado', owner: 'Sebastián', dueDate: '2026-10-25' },
+    ],
+    progressPhotos: [
+      {
+        id: 'photo-1',
+        caption: 'Inicio del montaje del distribuidor principal',
+        transcript: 'Se colocó la bancada del distribuidor y se verificó el nivel.',
+        url: 'https://images.unsplash.com/photo-1504307651254-35680f356dfd?auto=format&fit=crop&w=1200&q=80',
+      },
+    ],
+    notes: [
+      { id: 'note-1', text: 'Revisar aislamiento en interconexión de AHU y filtro de ingreso.' },
+    ],
+  },
+  {
+    id: 'proj-2',
+    name: 'Centro Comercial - VRF',
+    type: 'Retail',
+    client: 'Grupo Consorcio',
+    location: 'Lanús',
+    manager: 'Diana López',
+    status: 'En seguimiento',
+    updatedAt: '2026-10-27',
+    plans: [
+      {
+        id: 'plan-3',
+        name: 'Planta técnica - VRF.pdf',
+        type: 'pdf',
+        url: '',
+        issues: [],
+      },
+    ],
+    tasks: [
+      { id: 'task-4', title: 'Conexión unidades interiores', status: 'Pendiente', owner: 'Julián', dueDate: '2026-11-04' },
+      { id: 'task-5', title: 'Check list de drenajes', status: 'Revisión', owner: 'Sofía', dueDate: '2026-11-05' },
+    ],
+    progressPhotos: [],
+    notes: [],
+  },
+  {
+    id: 'proj-3',
+    name: 'Planta Industrial - Calderas',
+    type: 'Industrial',
+    client: 'Aguas del Sur',
+    location: 'Berazategui',
+    manager: 'Carlos Ruiz',
+    status: 'En curso',
+    updatedAt: '2026-10-26',
+    plans: [],
+    tasks: [
+      { id: 'task-6', title: 'Montaje de caldera 02', status: 'En progreso', owner: 'Gonzalo', dueDate: '2026-10-31' },
+      { id: 'task-7', title: 'Alineación de bombas', status: 'Bloqueado', owner: 'Martín', dueDate: '2026-11-01' },
+    ],
+    progressPhotos: [],
+    notes: [],
+  },
+];
+
+const isBrowser = typeof window !== 'undefined';
+
+function readLocalState() {
+  if (!isBrowser) return null;
+  const raw = localStorage.getItem(STORAGE_KEY);
+  if (!raw) return null;
+
+  try {
+    return JSON.parse(raw);
+  } catch (error) {
+    return null;
+  }
+}
+
+function generateId(prefix) {
+  return `${prefix}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function readFileAsDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+function App() {
+  const persisted = readLocalState();
+  const [projects, setProjects] = useState(persisted?.projects || sampleProjects);
+  const [settings, setSettings] = useState(persisted?.settings || defaultSettings);
+  const [selectedProjectId, setSelectedProjectId] = useState((persisted?.projects || sampleProjects)[0]?.id || '');
+  const [activeTab, setActiveTab] = useState('overview');
+  const [newProjectForm, setNewProjectForm] = useState({
+    name: '',
+    type: 'Edificio comercial',
+    client: '',
+    location: '',
+    manager: '',
+    status: 'En seguimiento',
+  });
+  const [selectedPlanId, setSelectedPlanId] = useState('');
+  const [issueDraft, setIssueDraft] = useState({
+    title: '',
+    description: '',
+    transcript: '',
+    x: 0.5,
+    y: 0.5,
+    status: 'Abierto',
+    attachments: [],
+  });
+  const [newTask, setNewTask] = useState({
+    title: '',
+    owner: '',
+    status: 'Pendiente',
+    dueDate: '',
+  });
+  const [quickPhoto, setQuickPhoto] = useState({ caption: '', transcript: '', file: '' });
+  const [reportForm, setReportForm] = useState({
+    type: 'summary',
+    recipient: 'capataz@empresa.com',
+  });
+  const [newProjectOpen, setNewProjectOpen] = useState(false);
+
+  useEffect(() => {
+    if (!isBrowser) return;
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ projects, settings }));
+  }, [projects, settings]);
+
+  const currentProject = useMemo(
+    () => projects.find((project) => project.id === selectedProjectId) || projects[0] || null,
+    [projects, selectedProjectId],
+  );
+
+  useEffect(() => {
+    if (!currentProject) return;
+    if (!selectedPlanId && currentProject.plans?.length) {
+      setSelectedPlanId(currentProject.plans[0].id);
+      return;
+    }
+    if (selectedPlanId && !currentProject.plans?.some((plan) => plan.id === selectedPlanId)) {
+      setSelectedPlanId(currentProject.plans?.[0]?.id || '');
+    }
+  }, [currentProject, selectedPlanId]);
+
+  const selectedPlan =
+    currentProject?.plans?.find((plan) => plan.id === selectedPlanId) || currentProject?.plans?.[0] || null;
+
+  const totalTasks = projects.reduce((sum, project) => sum + (project.tasks?.length || 0), 0);
+  const totalIssues = projects.reduce(
+    (sum, project) => sum + project.plans.reduce((planSum, plan) => planSum + (plan.issues?.length || 0), 0),
+    0,
+  );
+
+  const updateProject = (projectId, callback) => {
+    setProjects((prevProjects) =>
+      prevProjects.map((project) => (project.id === projectId ? callback(project) : project)),
+    );
+  };
+
+  const handleCreateProject = () => {
+    if (!newProjectForm.name.trim()) return;
+
+    const newProject = {
+      id: generateId('project'),
+      name: newProjectForm.name,
+      type: newProjectForm.type,
+      client: newProjectForm.client || 'Cliente sin definir',
+      location: newProjectForm.location || 'Sin ubicación',
+      manager: newProjectForm.manager || 'Sin responsable',
+      status: newProjectForm.status,
+      updatedAt: new Date().toISOString().slice(0, 10),
+      plans: [],
+      tasks: [],
+      progressPhotos: [],
+      notes: [],
+    };
+
+    setProjects((prev) => [newProject, ...prev]);
+    setSelectedProjectId(newProject.id);
+    setNewProjectForm({
+      name: '',
+      type: 'Edificio comercial',
+      client: '',
+      location: '',
+      manager: '',
+      status: 'En seguimiento',
+    });
+    setNewProjectOpen(false);
+    setActiveTab('overview');
+  };
+
+  const handlePlanUpload = async (event) => {
+    const files = Array.from(event.target.files || []);
+    if (!files.length || !currentProject) return;
+
+    const newPlans = await Promise.all(
+      files.map(async (file) => {
+        const dataUrl = file.type.startsWith('image/') || file.type === 'application/pdf' ? await readFileAsDataUrl(file) : '';
+        return {
+          id: generateId('plan'),
+          name: file.name,
+          type: file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf') ? 'pdf' : 'image',
+          url: dataUrl || '',
+          issues: [],
+        };
+      }),
+    );
+
+    updateProject(currentProject.id, (project) => ({
+      ...project,
+      plans: [...(project.plans || []), ...newPlans],
+      updatedAt: new Date().toISOString().slice(0, 10),
+    }));
+    setTimeout(() => {
+      if (newPlans[0]) setSelectedPlanId(newPlans[0].id);
+    }, 0);
+    event.target.value = '';
+  };
+
+  const handlePlanPointClick = (event) => {
+    if (!selectedPlan) return;
+    const rect = event.currentTarget.getBoundingClientRect();
+    const x = Math.min(Math.max((event.clientX - rect.left) / rect.width, 0.02), 0.98);
+    const y = Math.min(Math.max((event.clientY - rect.top) / rect.height, 0.02), 0.98);
+    setIssueDraft((prev) => ({ ...prev, x, y }));
+  };
+
+  const handleIssueAttachmentFiles = async (event) => {
+    const files = Array.from(event.target.files || []);
+    if (!files.length) return;
+
+    const attachments = await Promise.all(
+      files.map(async (file) => ({
+        id: generateId('issue-attachment'),
+        name: file.name,
+        type: file.type.startsWith('image/') ? 'image' : file.type.startsWith('audio/') ? 'audio' : 'file',
+        url: await readFileAsDataUrl(file),
+      })),
+    );
+
+    setIssueDraft((prev) => ({ ...prev, attachments: [...prev.attachments, ...attachments] }));
+    event.target.value = '';
+  };
+
+  const handleCreateIssue = () => {
+    if (!selectedPlan || !currentProject) return;
+    if (!issueDraft.title.trim()) return;
+
+    const newIssue = {
+      id: generateId('issue'),
+      title: issueDraft.title,
+      description: issueDraft.description,
+      transcript: issueDraft.transcript,
+      x: issueDraft.x,
+      y: issueDraft.y,
+      status: issueDraft.status,
+      attachments: issueDraft.attachments,
+    };
+
+    updateProject(currentProject.id, (project) => ({
+      ...project,
+      plans: project.plans.map((plan) =>
+        plan.id === selectedPlan.id ? { ...plan, issues: [...(plan.issues || []), newIssue] } : plan,
+      ),
+      updatedAt: new Date().toISOString().slice(0, 10),
+    }));
+
+    setIssueDraft({
+      title: '',
+      description: '',
+      transcript: '',
+      x: 0.5,
+      y: 0.5,
+      status: 'Abierto',
+      attachments: [],
+    });
+  };
+
+  const handleDeletePlan = (planId) => {
+    if (!currentProject) return;
+    updateProject(currentProject.id, (project) => ({
+      ...project,
+      plans: (project.plans || []).filter((plan) => plan.id !== planId),
+      updatedAt: new Date().toISOString().slice(0, 10),
+    }));
+
+    if (selectedPlanId === planId) {
+      const nextPlan = currentProject.plans.find((plan) => plan.id !== planId);
+      setSelectedPlanId(nextPlan ? nextPlan.id : '');
+    }
+  };
+
+  const handleCreateTask = () => {
+    if (!currentProject || !newTask.title.trim()) return;
+
+    const task = {
+      id: generateId('task'),
+      title: newTask.title,
+      owner: newTask.owner || 'Sin asignar',
+      status: newTask.status,
+      dueDate: newTask.dueDate || new Date().toISOString().slice(0, 10),
+    };
+
+    updateProject(currentProject.id, (project) => ({
+      ...project,
+      tasks: [...(project.tasks || []), task],
+      updatedAt: new Date().toISOString().slice(0, 10),
+    }));
+
+    setNewTask({ title: '', owner: '', status: 'Pendiente', dueDate: '' });
+  };
+
+  const handleQuickPhoto = async () => {
+    if (!currentProject || !quickPhoto.caption.trim()) return;
+
+    const newPhoto = {
+      id: generateId('progress-photo'),
+      caption: quickPhoto.caption,
+      transcript: quickPhoto.transcript,
+      url: quickPhoto.file || 'https://images.unsplash.com/photo-1489515217757-5fd1be406fef?auto=format&fit=crop&w=1200&q=80',
+    };
+
+    updateProject(currentProject.id, (project) => ({
+      ...project,
+      progressPhotos: [...(project.progressPhotos || []), newPhoto],
+      updatedAt: new Date().toISOString().slice(0, 10),
+    }));
+
+    setQuickPhoto({ caption: '', transcript: '', file: '' });
+  };
+
+  const handleQuickPhotoUpload = async (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    const dataUrl = await readFileAsDataUrl(file);
+    setQuickPhoto((prev) => ({ ...prev, file: dataUrl }));
+    event.target.value = '';
+  };
+
+  const downloadBlob = (blob, fileName) => {
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = fileName;
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const exportReport = () => {
+    if (!currentProject) return;
+
+    const reportType = reportForm.type;
+    const subject = encodeURIComponent(`Informe ${reportType} - ${currentProject.name}`);
+    const body = encodeURIComponent(
+      `Proyecto: ${currentProject.name}\nResponsable: ${currentProject.manager}\nEmail del destinatario: ${reportForm.recipient}\n\nAdjunto el informe solicitado.`,
+    );
+
+    if (reportType === 'csv') {
+      const csvRows = [
+        ['Proyecto', 'Tipo', 'Responsable', 'Estado', 'Tarea', 'Asignado', 'Fecha', 'Incidencia', 'Descripción', 'Transcripción'],
+      ];
+
+      currentProject.tasks.forEach((task) => {
+        csvRows.push([
+          currentProject.name,
+          currentProject.type,
+          currentProject.manager,
+          currentProject.status,
+          task.title,
+          task.owner,
+          task.dueDate,
+          '',
+          '',
+          '',
+        ]);
+      });
+
+      currentProject.plans.forEach((plan) => {
+        plan.issues.forEach((issue) => {
+          csvRows.push([
+            currentProject.name,
+            currentProject.type,
+            currentProject.manager,
+            currentProject.status,
+            '',
+            '',
+            '',
+            issue.title,
+            issue.description,
+            issue.transcript,
+          ]);
+        });
+      });
+
+      const csv = csvRows.map((row) => row.map((value) => `"${String(value || '').replaceAll('"', '""')}"`).join(',')).join('\n');
+      downloadBlob(new Blob([csv], { type: 'text/csv;charset=utf-8;' }), `${currentProject.name.toLowerCase().replaceAll(' ', '-')}-informe.csv`);
+      window.location.href = `mailto:${reportForm.recipient}?subject=${subject}&body=${body}`;
+      return;
+    }
+
+    const doc = new jsPDF();
+    doc.setFontSize(18);
+    doc.text(currentProject.name, 14, 20);
+    doc.setFontSize(11);
+    doc.text(`Tipo: ${currentProject.type} | Cliente: ${currentProject.client}`, 14, 30);
+    doc.text(`Ubicación: ${currentProject.location} | Responsable: ${currentProject.manager}`, 14, 37);
+    doc.text(`Estado: ${currentProject.status}`, 14, 44);
+
+    let y = 58;
+    doc.setFontSize(12);
+    doc.text('Resumen de tareas', 14, y);
+    y += 8;
+    currentProject.tasks.forEach((task, index) => {
+      const line = `${index + 1}. ${task.title} | ${task.status} | ${task.owner} | ${task.dueDate}`;
+      doc.setFontSize(10);
+      const splitText = doc.splitTextToSize(line, 180);
+      doc.text(splitText, 18, y);
+      y += splitText.length * 6 + 2;
+      if (y > 250) {
+        y = 20;
+        doc.addPage();
+      }
+    });
+
+    if (reportType === 'detailed') {
+      doc.addPage();
+      y = 20;
+      doc.setFontSize(12);
+      doc.text('Incidencias y planos', 14, y);
+      y += 10;
+      currentProject.plans.forEach((plan) => {
+        doc.setFontSize(10);
+        doc.text(`Plano: ${plan.name} (${plan.issues.length} incidencias)`, 18, y);
+        y += 8;
+        plan.issues.forEach((issue) => {
+          doc.text(`- ${issue.title}: ${issue.description || 'Sin detalle'}`, 22, y);
+          y += 8;
+          if (issue.transcript.trim()) {
+            const transcriptLines = doc.splitTextToSize(`  Transcripción: ${issue.transcript}`, 170);
+            doc.text(transcriptLines, 22, y);
+            y += transcriptLines.length * 6;
+          }
+          if (y > 250) {
+            y = 20;
+            doc.addPage();
+          }
+        });
+      });
+    }
+
+    doc.save(`${currentProject.name.toLowerCase().replaceAll(' ', '-')}-${reportType}.pdf`);
+    window.location.href = `mailto:${reportForm.recipient}?subject=${subject}&body=${body}`;
+  };
+
+  const projectCount = projects.length;
+
+  return (
+    <div className={`app-shell ${settings.theme}`}>
+      <header className="topbar">
+        <div className="brand-block">
+          {settings.logo ? (
+            <img src={settings.logo} alt="Logo empresa" className="logo-mini" />
+          ) : (
+            <div className="logo-fallback">H</div>
+          )}
+          <div>
+            <small>Gestión de obra</small>
+            <h1>{settings.companyName}</h1>
+          </div>
+        </div>
+
+        <div className="topbar-actions">
+          <button className="secondary-btn" onClick={() => setNewProjectOpen(true)}>
+            + Nueva obra
+          </button>
+          <div className="status-pill">{projectCount} proyectos</div>
+        </div>
+      </header>
+
+      {newProjectOpen && (
+        <div className="modal-backdrop" onClick={() => setNewProjectOpen(false)}>
+          <div className="modal-card" onClick={(event) => event.stopPropagation()}>
+            <h3>Alta de nueva obra</h3>
+
+            <div className="form-grid two-col">
+              <label>
+                Nombre de la obra
+                <input value={newProjectForm.name} onChange={(e) => setNewProjectForm({ ...newProjectForm, name: e.target.value })} />
+              </label>
+              <label>
+                Tipo
+                <select value={newProjectForm.type} onChange={(e) => setNewProjectForm({ ...newProjectForm, type: e.target.value })}>
+                  {planTypes.map((type) => (
+                    <option key={type} value={type}>{type}</option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                Cliente
+                <input value={newProjectForm.client} onChange={(e) => setNewProjectForm({ ...newProjectForm, client: e.target.value })} />
+              </label>
+              <label>
+                Ubicación
+                <input value={newProjectForm.location} onChange={(e) => setNewProjectForm({ ...newProjectForm, location: e.target.value })} />
+              </label>
+              <label>
+                Responsable
+                <input value={newProjectForm.manager} onChange={(e) => setNewProjectForm({ ...newProjectForm, manager: e.target.value })} />
+              </label>
+              <label>
+                Estado
+                <select value={newProjectForm.status} onChange={(e) => setNewProjectForm({ ...newProjectForm, status: e.target.value })}>
+                  <option>En seguimiento</option>
+                  <option>En curso</option>
+                  <option>Pausado</option>
+                  <option>Finalizado</option>
+                </select>
+              </label>
+            </div>
+
+            <div className="modal-actions">
+              <button className="ghost-btn" onClick={() => setNewProjectOpen(false)}>Cancelar</button>
+              <button className="primary-btn" onClick={handleCreateProject}>Guardar obra</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {!currentProject ? (
+        <div className="empty-state">No hay proyectos activos todavía.</div>
+      ) : (
+        <main className="workspace">
+          <aside className="project-sidebar">
+            <div className="section-header">
+              <h3>Obras</h3>
+            </div>
+
+            <div className="project-list">
+              {projects.map((project) => (
+                <button
+                  key={project.id}
+                  className={`project-card ${project.id === selectedProjectId ? 'active' : ''}`}
+                  onClick={() => {
+                    setSelectedProjectId(project.id);
+                    setActiveTab('overview');
+                  }}
+                >
+                  <div className="project-card-top">
+                    <strong>{project.name}</strong>
+                    <span className="small-tag">{project.status}</span>
+                  </div>
+                  <small>{project.location}</small>
+                  <div className="meta-row">
+                    <span>{project.tasks?.length || 0} tareas</span>
+                    <span>{project.plans?.reduce((sum, plan) => sum + (plan.issues?.length || 0), 0) || 0} incidencias</span>
+                  </div>
+                </button>
+              ))}
+            </div>
+          </aside>
+
+          <section className="detail-panel">
+            <div className="detail-header">
+              <div>
+                <span className="eyebrow">Proyecto activo</span>
+                <h2>{currentProject.name}</h2>
+              </div>
+              <div className="detail-metrics">
+                <span>{currentProject.tasks?.length || 0} tareas</span>
+                <span>{currentProject.plans?.length || 0} planos</span>
+                <span>{currentProject.progressPhotos?.length || 0} fotos</span>
+              </div>
+            </div>
+
+            <nav className="tabs">
+              {['overview', 'plans', 'tasks', 'reports', 'settings'].map((tab) => (
+                <button
+                  key={tab}
+                  className={activeTab === tab ? 'tab active' : 'tab'}
+                  onClick={() => setActiveTab(tab)}
+                >
+                  {tab === 'overview' && 'Resumen'}
+                  {tab === 'plans' && 'Planos'}
+                  {tab === 'tasks' && 'Tareas'}
+                  {tab === 'reports' && 'Informes'}
+                  {tab === 'settings' && 'Configuración'}
+                </button>
+              ))}
+            </nav>
+
+            {activeTab === 'overview' && (
+              <div className="tab-content overview-grid">
+                <div className="card">
+                  <h3>Resumen general</h3>
+                  <div className="stat-grid">
+                    <div className="stat-box">
+                      <span>Proyectos activos</span>
+                      <strong>{projectCount}</strong>
+                    </div>
+                    <div className="stat-box">
+                      <span>Incidencias</span>
+                      <strong>{totalIssues}</strong>
+                    </div>
+                    <div className="stat-box">
+                      <span>Tareas</span>
+                      <strong>{totalTasks}</strong>
+                    </div>
+                    <div className="stat-box">
+                      <span>Planos</span>
+                      <strong>{currentProject.plans?.length || 0}</strong>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="card">
+                  <h3>Datos del proyecto</h3>
+                  <div className="info-list">
+                    <div><span>Cliente</span><strong>{currentProject.client}</strong></div>
+                    <div><span>Ubicación</span><strong>{currentProject.location}</strong></div>
+                    <div><span>Responsable</span><strong>{currentProject.manager}</strong></div>
+                    <div><span>Estado</span><strong>{currentProject.status}</strong></div>
+                  </div>
+                </div>
+
+                <div className="card full-span">
+                  <h3>Fotos y avances</h3>
+                  <div className="quick-photo-form">
+                    <input
+                      value={quickPhoto.caption}
+                      placeholder="Descripción del avance"
+                      onChange={(e) => setQuickPhoto({ ...quickPhoto, caption: e.target.value })}
+                    />
+                    <textarea
+                      value={quickPhoto.transcript}
+                      placeholder="Comentario o transcripción de audio"
+                      onChange={(e) => setQuickPhoto({ ...quickPhoto, transcript: e.target.value })}
+                    />
+                    <label className="upload-inline">
+                      <input type="file" accept="image/*" capture="environment" onChange={handleQuickPhotoUpload} />
+                      <span>Adjuntar foto</span>
+                    </label>
+                    <button className="primary-btn" onClick={handleQuickPhoto}>Guardar foto de progreso</button>
+                  </div>
+
+                  <div className="photo-gallery">
+                    {(currentProject.progressPhotos || []).length ? (
+                      currentProject.progressPhotos.map((photo) => (
+                        <div key={photo.id} className="photo-item">
+                          <img src={photo.url} alt={photo.caption} />
+                          <div>
+                            <strong>{photo.caption}</strong>
+                            <p>{photo.transcript}</p>
+                          </div>
+                        </div>
+                      ))
+                    ) : (
+                      <p>No hay fotos de progreso cargadas.</p>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {activeTab === 'plans' && (
+              <div className="tab-content plans-grid">
+                <div className="card plan-sidebar">
+                  <div className="card-header-row">
+                    <h3>Planos</h3>
+                    <label className="upload-inline">
+                      <input type="file" accept=".pdf,image/*" multiple onChange={handlePlanUpload} />
+                      <span>Agregar planos</span>
+                    </label>
+                  </div>
+
+                  {currentProject.plans?.length ? (
+                    <div className="plan-list">
+                      {currentProject.plans.map((plan) => (
+                        <div key={plan.id} className={`plan-item ${selectedPlan?.id === plan.id ? 'selected' : ''}`}>
+                          <button className="plan-select" onClick={() => setSelectedPlanId(plan.id)}>
+                            {plan.name}
+                          </button>
+                          <button className="danger-btn small" onClick={() => handleDeletePlan(plan.id)}>Eliminar</button>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <p>No se cargaron planos aún.</p>
+                  )}
+                </div>
+
+                <div className="card plan-canvas-wrapper">
+                  {selectedPlan ? (
+                    <>
+                      <div className="plan-header-row">
+                        <h3>{selectedPlan.name}</h3>
+                        <span className="small-tag">{selectedPlan.type}</span>
+                      </div>
+
+                      <div className="plan-canvas" onClick={handlePlanPointClick}>
+                        {selectedPlan.type === 'pdf' ? (
+                          <embed src={selectedPlan.url || 'https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf'} type="application/pdf" />
+                        ) : (
+                          <img src={selectedPlan.url || 'https://images.unsplash.com/photo-1581092918056-0c4c3acd3789?auto=format&fit=crop&w=1200&q=80'} alt={selectedPlan.name} />
+                        )}
+
+                        {(selectedPlan.issues || []).map((issue) => (
+                          <button
+                            key={issue.id}
+                            className="issue-point"
+                            style={{ left: `${issue.x * 100}%`, top: `${issue.y * 100}%`, background: statusColors[issue.status] || '#ef4444' }}
+                            title={`${issue.title}`}
+                          ></button>
+                        ))}
+                      </div>
+
+                      <div className="issue-form">
+                        <div className="form-grid">
+                          <label>
+                            Título de incidencia
+                            <input value={issueDraft.title} onChange={(e) => setIssueDraft({ ...issueDraft, title: e.target.value })} />
+                          </label>
+                          <label>
+                            Estado
+                            <select value={issueDraft.status} onChange={(e) => setIssueDraft({ ...issueDraft, status: e.target.value })}>
+                              <option>Abierto</option>
+                              <option>Cerrado</option>
+                              <option>Revisión</option>
+                            </select>
+                          </label>
+                        </div>
+
+                        <label>
+                          Detalle
+                          <textarea value={issueDraft.description} onChange={(e) => setIssueDraft({ ...issueDraft, description: e.target.value })} />
+                        </label>
+                        <label>
+                          Transcripción / audio
+                          <textarea value={issueDraft.transcript} onChange={(e) => setIssueDraft({ ...issueDraft, transcript: e.target.value })} />
+                        </label>
+
+                        <div className="attachment-row">
+                          <label className="upload-inline">
+                            <input type="file" accept="image/*,audio/*" multiple onChange={handleIssueAttachmentFiles} />
+                            <span>Adjuntar fotos / audio</span>
+                          </label>
+                        </div>
+
+                        {issueDraft.attachments.length > 0 && (
+                          <div className="attachment-list">
+                            {issueDraft.attachments.map((attachment) => (
+                              <div key={attachment.id} className="attachment-item">
+                                {attachment.type === 'image' ? (
+                                  <img src={attachment.url} alt={attachment.name} />
+                                ) : (
+                                  <div className="file-pill">{attachment.name}</div>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        )}
+
+                        <button className="primary-btn" onClick={handleCreateIssue}>Guardar incidencia en plano</button>
+                      </div>
+                    </>
+                  ) : (
+                    <p>No hay plano activo.</p>
+                  )}
+                </div>
+
+                <div className="card issue-panel">
+                  <h3>Incidencias del plano</h3>
+                  {selectedPlan?.issues?.length ? (
+                    <div className="issue-list">
+                      {selectedPlan.issues.map((issue) => (
+                        <div key={issue.id} className="issue-item">
+                          <div className="issue-title-row">
+                            <strong>{issue.title}</strong>
+                            <span className="small-tag" style={{ background: `${statusColors[issue.status] || '#ef4444'}22`, color: statusColors[issue.status] || '#ef4444' }}>
+                              {issue.status}
+                            </span>
+                          </div>
+                          <p>{issue.description}</p>
+                          <small>{issue.transcript}</small>
+                          {issue.attachments?.length > 0 && (
+                            <div className="mini-gallery">
+                              {issue.attachments.map((attachment) => (
+                                <div key={attachment.id} className="mini-thumb-wrap">
+                                  {attachment.type === 'image' ? (
+                                    <img src={attachment.url} alt={attachment.name} className="mini-thumb" />
+                                  ) : (
+                                    <div className="mini-file">{attachment.name}</div>
+                                  )}
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <p>No hay incidencias cargadas.</p>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {activeTab === 'tasks' && (
+              <div className="tab-content tasks-grid">
+                <div className="card">
+                  <h3>Gestión de actividades</h3>
+                  <div className="form-grid three-col">
+                    <label>
+                      Nombre de la tarea
+                      <input value={newTask.title} onChange={(e) => setNewTask({ ...newTask, title: e.target.value })} />
+                    </label>
+                    <label>
+                      Responsable
+                      <input value={newTask.owner} onChange={(e) => setNewTask({ ...newTask, owner: e.target.value })} />
+                    </label>
+                    <label>
+                      Fecha límite
+                      <input type="date" value={newTask.dueDate} onChange={(e) => setNewTask({ ...newTask, dueDate: e.target.value })} />
+                    </label>
+                    <label>
+                      Estado
+                      <select value={newTask.status} onChange={(e) => setNewTask({ ...newTask, status: e.target.value })}>
+                        {Object.keys(statusColors).map((status) => (
+                          <option key={status} value={status}>{status}</option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
+                  <button className="primary-btn" onClick={handleCreateTask}>Agregar tarea</button>
+                </div>
+
+                <div className="card full-span">
+                  <h3>Listado de tareas</h3>
+                  <div className="task-table">
+                    {currentProject.tasks?.length ? (
+                      currentProject.tasks.map((task) => (
+                        <div key={task.id} className="task-row">
+                          <div>
+                            <strong>{task.title}</strong>
+                            <small>{task.owner}</small>
+                          </div>
+                          <span className="small-tag" style={{ background: `${statusColors[task.status] || '#3b82f6'}22`, color: statusColors[task.status] || '#3b82f6' }}>
+                            {task.status}
+                          </span>
+                          <small>{task.dueDate}</small>
+                        </div>
+                      ))
+                    ) : (
+                      <p>No hay tareas cargadas en esta obra.</p>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {activeTab === 'reports' && (
+              <div className="tab-content reports-grid">
+                <div className="card">
+                  <h3>Generación de informes</h3>
+                  <div className="form-grid">
+                    <label>
+                      Tipo de informe
+                      <select value={reportForm.type} onChange={(e) => setReportForm({ ...reportForm, type: e.target.value })}>
+                        <option value="summary">PDF resumido</option>
+                        <option value="detailed">Informe PDF detallado</option>
+                        <option value="csv">Exportación CSV</option>
+                      </select>
+                    </label>
+                    <label>
+                      Destinatario
+                      <input value={reportForm.recipient} onChange={(e) => setReportForm({ ...reportForm, recipient: e.target.value })} />
+                    </label>
+                  </div>
+                  <button className="primary-btn" onClick={exportReport}>Generar informe</button>
+                </div>
+
+                <div className="card">
+                  <h3>Entregas y documentación</h3>
+                  <ul className="report-list">
+                    <li>PDF resumido: listado de incidencias y tareas principales.</li>
+                    <li>PDF detallado: incluye anotaciones, comentarios y archivos adjuntos.</li>
+                    <li>CSV completo: exporta información para análisis y documentación final.</li>
+                  </ul>
+                </div>
+              </div>
+            )}
+
+            {activeTab === 'settings' && (
+              <div className="tab-content settings-grid">
+                <div className="card">
+                  <h3>Configuración de empresa</h3>
+                  <div className="form-grid two-col">
+                    <label>
+                      Nombre de la empresa
+                      <input value={settings.companyName} onChange={(e) => setSettings({ ...settings, companyName: e.target.value })} />
+                    </label>
+                    <label>
+                      Nombre del inspector
+                      <input value={settings.inspectorName} onChange={(e) => setSettings({ ...settings, inspectorName: e.target.value })} />
+                    </label>
+                    <label>
+                      Correo electrónico
+                      <input value={settings.email} onChange={(e) => setSettings({ ...settings, email: e.target.value })} />
+                    </label>
+                    <label>
+                      Teléfono
+                      <input value={settings.phone} onChange={(e) => setSettings({ ...settings, phone: e.target.value })} />
+                    </label>
+                    <label>
+                      Modo visual
+                      <select value={settings.theme} onChange={(e) => setSettings({ ...settings, theme: e.target.value })}>
+                        <option value="light">Claro</option>
+                        <option value="dark">Oscuro</option>
+                      </select>
+                    </label>
+                    <label>
+                      Logo de la empresa
+                      <input type="file" accept="image/*" onChange={async (event) => {
+                        const file = event.target.files?.[0];
+                        if (!file) return;
+                        const dataUrl = await readFileAsDataUrl(file);
+                        setSettings({ ...settings, logo: dataUrl });
+                      }} />
+                    </label>
+                  </div>
+                </div>
+
+                <div className="card">
+                  <h3>Vista previa</h3>
+                  <div className="company-preview">
+                    {settings.logo ? (
+                      <img src={settings.logo} alt="Logo preview" className="logo-preview" />
+                    ) : (
+                      <div className="logo-placeholder">Logo</div>
+                    )}
+                    <div>
+                      <strong>{settings.companyName}</strong>
+                      <p>{settings.inspectorName}</p>
+                      <small>{settings.email}</small>
+                      <small>{settings.phone}</small>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+          </section>
+        </main>
+      )}
+    </div>
+  );
+}
+
+export default App;
